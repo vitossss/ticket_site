@@ -1,5 +1,10 @@
+from decimal import Decimal
+
 from django.contrib.auth.models import User
 from django.db import models
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+from django.utils import timezone
 
 
 class Ticket(models.Model):
@@ -66,7 +71,24 @@ class Order(models.Model):
     @staticmethod
     def get_cart(user: User):
         cart = Order.objects.filter(user=user, status=Order.STATUS_CART).first()
+        if cart and (timezone.now() - cart.creation_time).days > 7:
+            cart.delete()
+            cart = None
+        if not cart:
+            cart = Order.objects.create(user=user, status=Order.STATUS_CART, amount=0)
         return cart
+
+    def get_amount(self):
+        amount = Decimal(0)
+        for item in self.orderitem_set.all():
+            amount += item.amount
+        return amount
+
+    def make_order(self):
+        items = self.orderitem_set.all()
+        if items and self.status == Order.STATUS_CART:
+            self.status = Order.STATUS_WAITING_FOR_PAYMENT
+            self.save()
 
 
 class OrderItem(models.Model):
@@ -88,3 +110,17 @@ class OrderItem(models.Model):
     def amount(self):
         amount = self.quantity * (self.price - self.discount)
         return amount
+
+
+@receiver(post_save, sender=OrderItem)  # Функція виконається після збереження об'єкта в OrderItem
+def recalculate_order_amount(sender, instance, **kwargs):
+    order = instance.order
+    order.amount = order.get_amount()
+    order.save()
+
+
+@receiver(post_delete, sender=OrderItem)  # Функція виконається після збереження об'єкта в OrderItem
+def recalculate_order_amount(sender, instance, **kwargs):
+    order = instance.order
+    order.amount = order.get_amount()
+    order.save()
